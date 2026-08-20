@@ -5,17 +5,10 @@ import asyncio
 import time
 import threading
 from datetime import date
-from pathlib import Path
 from flask import Flask, render_template_string, jsonify
+import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-
-# Aliens_eye dahili modülleri[cite: 1]
-from aliens_eye.core.config import ScannerConfig
-from aliens_eye.core.detector import Detector
-from aliens_eye.core.analyzer import FeatureExtractor
-from aliens_eye.core.fingerprints import FingerprintStore
-from aliens_eye.core.scanner import UsernameScanner, load_sites_data
 
 # --- CANLI LOG YAKALAYICI (WEB PANEL İÇİN) ---
 class MemoryLogHandler(logging.Handler):
@@ -38,10 +31,8 @@ logger.addHandler(memory_handler)
 
 TOKEN = "8697686670:AAHZX2U5Wx0jZwVfHzf9SCdI1mB-mtB1c9s"
 ADMIN_IDS = [8522767291]  # Senin Admin ID'n[cite: 1]
-
 DB_FILE = "database.json"
 
-# Flask ve Web Dashboard Ayarları
 app = Flask(__name__)
 bot_running = False
 
@@ -91,7 +82,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# --- VERİTABANI YÖNETİMİ[cite: 1] ---
+# --- VERİTABANI YÖNETİMİ ---
 def load_db():
     if os.path.exists(DB_FILE):
         try:
@@ -110,17 +101,16 @@ def save_db(data):
 
 user_targets = {}
 
-# --- ÖNCELİKLİ KUYRUK YÖNETİCİSİ (PRIORITY QUEUE)[cite: 1] ---
+# --- ÖNCELİKLİ KUYRUK YÖNETİCİSİ ---
 class ScanQueueManager:
     def __init__(self, max_concurrent=1):
         self.max_concurrent = max_concurrent
         self.active_scans = 0
-        self.queue = []  # Elemanlar: (priority, timestamp, future)[cite: 1]
+        self.queue = []
 
     async def acquire(self, is_premium: bool):
         loop = asyncio.get_running_loop()
         future = loop.create_future()
-
         priority = 0 if is_premium else 1
         entry_time = time.time()
 
@@ -167,7 +157,7 @@ class ScanQueueManager:
 
 scan_manager = ScanQueueManager(max_concurrent=1)
 
-# --- /START KOMUTU[cite: 1] ---
+# --- /START KOMUTU ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -192,7 +182,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
 
-# --- ADMIN: PREMIUM VERME KOMUTU[cite: 1] ---
+# --- ADMIN: PREMIUM VERME ---
 async def give_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_IDS:
@@ -221,7 +211,7 @@ async def give_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"ℹ️ `{target_id}` zaten Premium üyeliğe sahip.", parse_mode="Markdown")
 
-# --- KULLANICI MESAJI VE LİMİT KONTROLÜ[cite: 1] ---
+# --- KULLANICI MESAJI VE LİMİT ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text.strip()
@@ -259,7 +249,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await update.message.reply_text(f"🔍 `{username}` kuyruğa ekleniyor...", parse_mode="Markdown")
         asyncio.create_task(handle_scan_with_queue(update, context, user_id, username, "basic", f"Abonelik: Free (Kalan: {remaining}/2)", status_msg))
 
-# --- BUTON SEÇİM YÖNETİCİSİ[cite: 1] ---
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -276,7 +265,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await query.edit_message_text(f"👑 `{username}` hedefi **{mode.upper()}** modunda kuyruğa alınıyor...", parse_mode="Markdown")
     asyncio.create_task(handle_scan_with_queue(update, context, user_id, username, mode, "Abonelik: 👑 VIP (Sınırsız)", status_msg))
 
-# --- KUYRUK İLE TARAMA KONTROLCÜSÜ[cite: 1] ---
 async def handle_scan_with_queue(update, context, user_id, username, mode, footer_info, status_msg):
     db = load_db()
     position = await scan_manager.acquire(user_id in db["premium"] or user_id in ADMIN_IDS)
@@ -293,46 +281,34 @@ async def handle_scan_with_queue(update, context, user_id, username, mode, foote
     finally:
         scan_manager.release()
 
-# --- ÖNCELİKLİ HESAP SIRALAMA[cite: 1] ---
-def sort_priority_accounts(accounts):
-    priority_keywords = ["instagram", "twitter", "x.com", "github", "tiktok", "youtube", "telegram", "linkedin", "reddit", "facebook"]
-    priority_list = [acc for acc in accounts if any(kw in acc.lower() for kw in priority_keywords)]
-    other_list = [acc for acc in accounts if not any(kw in acc.lower() for kw in priority_keywords)]
-    
-    def get_score(url):
-        for i, kw in enumerate(priority_keywords):
-            if kw in url.lower(): return i
-        return 999
-    priority_list.sort(key=get_score)
-    return priority_list + other_list
-
-# --- TARAMA MOTORU VE .TXT RAPOR[cite: 1] ---
+# --- DAHİLİ HIZLI TARAMA MOTORU ---
 async def execute_scan(chat_id, context, user_id, username, mode, footer_info, status_message_id):
     logger.info(f"🔍 [TARAMA] Kullanıcı: {user_id} | Mod: {mode} | Hedef: {username}")
     try:
-        config = ScannerConfig()
-        config.use_ml = True
-        
-        sites_data = load_sites_data(config.sites_path)
-        detector = Detector()
-        detector.load_model(logger, config.model_path)
-        
-        extractor = FeatureExtractor()
-        fingerprints = FingerprintStore(config.fingerprints_path, config.max_fingerprints_per_label)
-        fingerprints.load(logger)
+        sites = {
+            "GitHub": f"https://github.com/{username}",
+            "Telegram": f"https://t.me/{username}",
+            "Twitter": f"https://twitter.com/{username}",
+            "TikTok": f"https://www.tiktok.com/@{username}",
+            "Instagram": f"https://www.instagram.com/{username}/"
+        }
 
-        scanner = UsernameScanner(sites_data, config, extractor, detector, fingerprints, logger)
-        all_results = await asyncio.wait_for(scanner.scan_with_variations(username, mode), timeout=180)
-        
-        found_accounts = [r["url"] for res in all_results.values() for r in res if r.get("status") in ["Found", "found"]]
+        found_accounts = []
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}) as client:
+            for name, url in sites.items():
+                try:
+                    res = await client.get(url)
+                    if res.status_code == 200:
+                        found_accounts.append(url)
+                except Exception:
+                    pass
 
         try: await context.bot.delete_message(chat_id=chat_id, message_id=status_message_id)
         except Exception: pass
 
         if found_accounts:
-            sorted_accounts = sort_priority_accounts(found_accounts)
-            txt_content = f"=== MACHA OSINT TARGET REPORT ===\nTarget: {username}\nTotal Found: {len(sorted_accounts)}\n\n"
-            for index, acc in enumerate(sorted_accounts, 1):
+            txt_content = f"=== MACHA OSINT TARGET REPORT ===\nTarget: {username}\nTotal Found: {len(found_accounts)}\n\n"
+            for index, acc in enumerate(found_accounts, 1):
                 txt_content += f"{index}. {acc}\n"
             
             file_path = f"{username}_report.txt"
@@ -342,7 +318,7 @@ async def execute_scan(chat_id, context, user_id, username, mode, footer_info, s
                 await context.bot.send_document(
                     chat_id=chat_id, 
                     document=InputFile(f, filename=file_path), 
-                    caption=f"🎯 **{username}** taraması tamamlandı!\n📊 Toplam: `{len(sorted_accounts)}`\n\nℹ️ *{footer_info}*", 
+                    caption=f"🎯 **{username}** taraması tamamlandı!\n📊 Toplam: `{len(found_accounts)}`\n\nℹ️ *{footer_info}*", 
                     parse_mode="Markdown"
                 )
             if os.path.exists(file_path): os.remove(file_path)
@@ -351,7 +327,7 @@ async def execute_scan(chat_id, context, user_id, username, mode, footer_info, s
     except Exception as e:
         logger.error(f"Tarama Hatası: {e}", exc_info=True)
 
-# --- FLASK WEB ENDPOINTLERİ ---
+# --- FLASK ENDPOINTLERİ ---
 @app.route('/')
 def dashboard():
     return render_template_string(HTML_TEMPLATE)
@@ -370,8 +346,8 @@ def run_telegram_bot():
     app_bot = ApplicationBuilder().token(TOKEN).build()
     app_bot.add_handler(CommandHandler("start", start))
     app_bot.add_handler(CommandHandler("prim", give_premium))
-    app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    app_bot.add_handler(CallbackQueryHandler(button_callback))
+    app_bot.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
     bot_running = True
     logger.info("🤖 Telegram bot polling başlatıldı.")

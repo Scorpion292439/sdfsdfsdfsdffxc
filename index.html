@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aliens_eye Bot Dashboard</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background: #1e293b; padding: 25px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
+        h1 { color: #38bdf8; margin-top: 0; }
+        .status-box { display: flex; align-items: center; justify-content: space-between; background: #0f172a; padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #334155; }
+        .badge { padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 14px; }
+        .online { background: #065f46; color: #34d399; }
+        .offline { background: #7f1d1d; color: #f87171; }
+        button { background: #0284c7; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: background 0.2s; }
+        button:hover { background: #0369a1; }
+        pre { background: #0f172a; padding: 15px; border-radius: 8px; overflow-x: auto; height: 300px; border: 1px solid #334155; color: #a5f3fc; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Aliens_eye Bot Dashboard</h1>
+        <div class="status-box">
+            <div>
+                <strong>Bot Durumu:</strong> <span id="statusBadge" class="badge online">Kontrol Ediliyor...</span>
+            </div>
+            <button onclick="restartBot()">Botu Yeniden Başlat</button>
+        </div>
+        <h3>📋 Canlı Sistem Logları</h3>
+        <pre id="logBox">Loglar yükleniyor...</pre>
+    </div>
+
+    <script>
+        async function fetchLogs() {
+            try {
+                let response = await fetch('/logs');
+                let data = await response.json();
+                document.getElementById('logBox').innerText = data.logs;
+                let badge = document.getElementById('statusBadge');
+                badge.className = data.status === 'online' ? 'badge online' : 'badge offline';
+                badge.innerText = data.status === 'online' ? 'Aktif & Çalışıyor' : 'Durduruldu';
+            } catch (e) {
+                console.error("Loglar alınamadı");
+            }
+        }
+
+        async function restartBot() {
+            let btn = document.querySelector('button');
+            btn.innerText = "Yeniden Başlatılıyor...";
+            await fetch('/restart', { method: 'POST' });
+            setTimeout(() => {
+                btn.innerText = "Botu Yeniden Başlat";
+                fetchLogs();
+            }, 2000);
+        }
+
+        setInterval(fetchLogs, 3000);
+        fetchLogs();
+    </script>
+</body>
+</html>
